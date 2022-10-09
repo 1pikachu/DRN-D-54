@@ -26,7 +26,7 @@ model_names = sorted(name for name in models.__dict__
 def parse_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('cmd', choices=['train', 'test', 'map', 'locate'])
-    parser.add_argument('data', metavar='DIR',
+    parser.add_argument('--data', metavar='DIR', default=None,
                         help='path to dataset')
     parser.add_argument('--arch', '-a', metavar='ARCH', default='drn18',
                         choices=model_names,
@@ -62,6 +62,14 @@ def parse_args():
     parser.add_argument('--crop-size', dest='crop_size', type=int, default=224)
     parser.add_argument('--scale-size', dest='scale_size', type=int, default=256)
     parser.add_argument('--step-ratio', dest='step_ratio', type=float, default=0.1)
+    # oob
+    parser.add_argument('--device', choices=["cpu", "cuda", "xpu"], default="cpu", type=str)
+    parser.add_argument('--dummy', action="store_true", default=True, help="use dummy input")
+    parser.add_argument("--num_warmup", "--warmup_iter", type=int, default=20, help="The number warmup, default is 20.")
+    parser.add_argument("--num_iters", "--early_stop_at_iter",type=int, default=200, help="The number iters of benchmark, default is 200.")
+    parser.add_argument('--precision', choices=["float32", "float16", "bfloat16"], default='float32', help='Precision')
+    parser.add_argument('--image_size', type=int, default=224, help="input img size")
+
     args = parser.parse_args()
     return args
 
@@ -161,7 +169,7 @@ def test_model(args):
     # create model
     model = models.__dict__[args.arch](args.pretrained)
 
-    model = torch.nn.DataParallel(model).cuda()
+    # model = torch.nn.DataParallel(model).cuda()
 
     if args.resume:
         if os.path.isfile(args.resume):
@@ -178,21 +186,25 @@ def test_model(args):
     cudnn.benchmark = True
 
     # Data loading code
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    if not args.dummy:
+        valdir = os.path.join(args.data, 'val')
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
 
-    t = transforms.Compose([
-        transforms.Scale(args.scale_size),
-        transforms.CenterCrop(args.crop_size),
-        transforms.ToTensor(),
-        normalize])
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, t),
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+        t = transforms.Compose([
+            transforms.Scale(args.scale_size),
+            transforms.CenterCrop(args.crop_size),
+            transforms.ToTensor(),
+            normalize])
+        val_loader = torch.utils.data.DataLoader(
+            datasets.ImageFolder(valdir, t),
+            batch_size=args.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=True)
+    else:
+        val_loader = None
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    # criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss()
 
     validate(args, val_loader, model, criterion)
 
@@ -212,7 +224,7 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        target = target.cuda(async=True)
+        target = target.cuda()
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
 
@@ -255,37 +267,29 @@ def validate(args, val_loader, model, criterion):
     # switch to evaluate mode
     model.eval()
 
-    end = time.time()
-    for i, (input, target) in enumerate(val_loader):
-        target = target.cuda(async=True)
-        input_var = torch.autograd.Variable(input, volatile=True)
-        target_var = torch.autograd.Variable(target, volatile=True)
+    total_time = 0
+    total_count = 0
+    if not args.dummy:
+        for i, (input, target) in enumerate(val_loader):
+            # target = target.cuda(async=True)
 
-        # compute output
-        output = model(input_var)
-        loss = criterion(output, target_var)
+            # compute output
+            output = model(input)
+    else:
+        input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
+        for i in range(args.num_iters + args.num_warmup):
+            start_time = time.time()
+            output = model(input)
+            duration = time.time() - start_time
+            print("iter duration: ", duration)
+            if i >= args.num_warmup:
+                total_time += duration
+                total_count += 1
+        perf = args.batch_size * total_count / total_time
+        print('inference Throughput: %3.3f fps'%perf)
+        print('batch size: %d'%args.batch_size)
+        print('device: %s'%args.device)
 
-        # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            print('Test: [{0}/{1}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   i, len(val_loader), batch_time=batch_time, loss=losses,
-                   top1=top1, top5=top5))
-
-    print(' * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
-          .format(top1=top1, top5=top5))
 
     return top1.avg
 
