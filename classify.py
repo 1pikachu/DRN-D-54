@@ -69,6 +69,11 @@ def parse_args():
     parser.add_argument("--num_iters", "--early_stop_at_iter",type=int, default=200, help="The number iters of benchmark, default is 200.")
     parser.add_argument('--precision', choices=["float32", "float16", "bfloat16"], default='float32', help='Precision')
     parser.add_argument('--image_size', type=int, default=224, help="input img size")
+    parser.add_argument("--jit", action="store_true", help="Use jit optimize to do optimization.")
+    parser.add_argument("--nv_fuser", action="store_true")
+    parser.add_argument("--channels_last", type=bool, default=False, help="Use pytorch NHWC.")
+    parser.add_argument("--profile", action="store_true", default=False, help="Trigger profile on current topology.")
+    parser.add_argument("--bn_folding", action="store_true", default=False)
 
     args = parser.parse_args()
     return args
@@ -78,6 +83,9 @@ def main():
     print(' '.join(sys.argv))
     args = parse_args()
     print(args)
+    if args.device == "xpu":
+        import intel_extension_for_pytorch
+
     if args.cmd == 'train':
         run_training(args)
     elif args.cmd == 'test':
@@ -206,7 +214,15 @@ def test_model(args):
     # criterion = nn.CrossEntropyLoss().cuda()
     criterion = nn.CrossEntropyLoss()
 
-    validate(args, val_loader, model, criterion)
+    print("precision: ", args.precision)
+    if args.precision == "bfloat16":
+        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            validate(args, val_loader, model, criterion)
+    elif args.precision == "float16" and args.device == "cuda":
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+            validate(args, val_loader, model, criterion)
+    else:
+        validate(args, val_loader, model, criterion)
 
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
@@ -269,29 +285,121 @@ def validate(args, val_loader, model, criterion):
 
     total_time = 0
     total_count = 0
-    if not args.dummy:
-        for i, (input, target) in enumerate(val_loader):
-            # target = target.cuda(async=True)
-
-            # compute output
-            output = model(input)
+    # dummy input
+    input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
+    # device
+    input = input.to(args.device)
+    model = model.to(args.device)
+    # precision
+    if args.device == "xpu" and args.precision == "float16":
+        input = input.half()
+        model = model.half()
+    # channels_last
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+        input = input.to(memory_format=torch.channels_last)
+    # nv fuser
+    if args.nv_fuser:
+        fuser_mode = "fuser2"
     else:
-        input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
+        fuser_mode = "none"
+    print("---- fuser mode:", fuser_mode)
+    # jit
+    if args.jit:
+        try:
+            model = torch.jit.trace(model, input, check_trace=False)
+            print("---- With JIT enabled.")
+            if args.bn_folding:
+                from torch.jit._recursive import wrap_cpp_module
+                model = wrap_cpp_module(torch._C._jit_pass_fold_convbn(model._c))
+                print("---- With bn folding")
+        except (RuntimeError, TypeError) as e:
+            print("---- With JIT disabled.")
+            print("failed to use PyTorch jit mode due to: ", e)
+    if args.profile and args.device == "xpu":
         for i in range(args.num_iters + args.num_warmup):
-            start_time = time.time()
-            output = model(input)
+            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=args.xpu, record_shapes=False) as prof:
+                start_time = time.time()
+                output = model(input)
+                torch.xpu.synchronize(True)
             duration = time.time() - start_time
             print("iter duration: ", duration)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
-        perf = args.batch_size * total_count / total_time
-        print('inference Throughput: %3.3f fps'%perf)
-        print('batch size: %d'%args.batch_size)
-        print('device: %s'%args.device)
+            if args.profile and i == int((args.num_iters + args.num_warmup)/2):
+                import pathlib
+                timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                if not os.path.exists(timeline_dir):
+                    try:
+                        os.makedirs(timeline_dir)
+                    except:
+                        pass
+                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                    timeline_dir+'profile.pt')
+                torch.save(prof.key_averages(group_by_input_shape=True).table(),
+                    timeline_dir+'profile_detail.pt')
+    elif args.profile and args.device == "cuda":
+        with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=int((args.num_iters + args.num_warmup)/2),
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+            for i in range(args.num_iters + args.num_warmup):
+                start_time = time.time()
+                output = model(input)
+                torch.cuda.synchronize()
+                duration = time.time() - start_time
+                # profile iter update
+                p.step()
+                print("iter duration: ", duration)
+                if i >= args.num_warmup:
+                    total_time += duration
+                    total_count += 1
+    elif not args.profile:
+        for i in range(args.num_iters + args.num_warmup):
+            start_time = time.time()
+            output = model(input)
+            if args.device == "xpu":
+                torch.xpu.synchronize(True)
+            elif args.device == "cuda":
+                torch.cuda.synchronize()
+            duration = time.time() - start_time
+            print("iter duration: ", duration)
+            if i >= args.num_warmup:
+                total_time += duration
+                total_count += 1
+    else:
+        print("------please check params")
+        return 1
+
+    perf = args.batch_size * total_count / total_time
+    print('inference Throughput: %3.3f fps'%perf)
+    print('batch size: %d'%args.batch_size)
+    print('device: %s'%args.device)
 
 
     return top1.avg
+
+
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="self_cpu_time_total")
+    print(output)
+    import pathlib
+    timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+    if not os.path.exists(timeline_dir):
+        try:
+            os.makedirs(timeline_dir)
+        except:
+            pass
+    timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + \
+            '-' + str(p.step_num) + '-' + str(os.getpid()) + '.json'
+    p.export_chrome_trace(timeline_file)
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
