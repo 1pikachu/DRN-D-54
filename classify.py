@@ -216,9 +216,11 @@ def test_model(args):
 
     print("precision: ", args.precision)
     if args.precision == "bfloat16":
+        print("---- bfloat16 autocast")
         with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
             validate(args, val_loader, model, criterion)
     elif args.precision == "float16" and args.device == "cuda":
+        print("---- float16 autocast")
         with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
             validate(args, val_loader, model, criterion)
     else:
@@ -294,6 +296,7 @@ def validate(args, val_loader, model, criterion):
     if args.device == "xpu" and args.precision == "float16":
         input = input.half()
         model = model.half()
+        print("---- float16 to.half()")
     # channels_last
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
@@ -318,12 +321,12 @@ def validate(args, val_loader, model, criterion):
             print("failed to use PyTorch jit mode due to: ", e)
     if args.profile and args.device == "xpu":
         for i in range(args.num_iters + args.num_warmup):
-            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=args.xpu, record_shapes=False) as prof:
+            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
                 start_time = time.time()
                 output = model(input)
-                torch.xpu.synchronize(True)
+                torch.xpu.synchronize()
             duration = time.time() - start_time
-            print("iter duration: ", duration)
+            print("Iteration: ", duration)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
@@ -357,7 +360,7 @@ def validate(args, val_loader, model, criterion):
                 duration = time.time() - start_time
                 # profile iter update
                 p.step()
-                print("iter duration: ", duration)
+                print("Iteration: ", duration)
                 if i >= args.num_warmup:
                     total_time += duration
                     total_count += 1
@@ -366,11 +369,11 @@ def validate(args, val_loader, model, criterion):
             start_time = time.time()
             output = model(input)
             if args.device == "xpu":
-                torch.xpu.synchronize(True)
+                torch.xpu.synchronize()
             elif args.device == "cuda":
                 torch.cuda.synchronize()
             duration = time.time() - start_time
-            print("iter duration: ", duration)
+            print("Iteration: ", duration)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
