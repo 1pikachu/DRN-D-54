@@ -281,7 +281,7 @@ def validate(args, val_loader, model, criterion):
             start_time = time.time()
             output = model(input)
             duration = time.time() - start_time
-            print("iter duration: ", duration)
+            print("Iteration: ", duration)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
