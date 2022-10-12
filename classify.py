@@ -316,6 +316,7 @@ def validate(args, val_loader, model, criterion):
                 from torch.jit._recursive import wrap_cpp_module
                 model = wrap_cpp_module(torch._C._jit_pass_fold_convbn(model._c))
                 print("---- With bn folding")
+            model = torch.jit.freeze(model)
         except (RuntimeError, TypeError) as e:
             print("---- With JIT disabled.")
             print("failed to use PyTorch jit mode due to: ", e)
