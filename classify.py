@@ -301,6 +301,7 @@ def validate(args, val_loader, model, criterion):
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
         input = input.to(memory_format=torch.channels_last)
+        print("---- use NHWC format")
     # nv fuser
     if args.nv_fuser:
         fuser_mode = "fuser2"
