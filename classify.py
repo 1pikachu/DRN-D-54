@@ -217,15 +217,24 @@ def test_model(args):
     criterion = nn.CrossEntropyLoss()
 
     print("precision: ", args.precision)
-    if args.precision == "bfloat16":
-        print("---- bfloat16 autocast")
+    if args.precision == "bfloat16" and args.device == "cpu":
+        print("---- bfloat16 cpu autocast")
         with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
             validate(args, val_loader, model, criterion)
+    elif args.precision == "bfloat16" and args.device == "xpu":
+        print("---- bfloat16 xpu autocast")
+        with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            validate(args, val_loader, model, criterion)
     elif args.precision == "float16" and args.device == "cuda":
-        print("---- float16 autocast")
+        print("---- float16 cuda autocast")
         with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
             validate(args, val_loader, model, criterion)
+    elif args.precision == "float16" and args.device == "xpu":
+        print("---- float16 xpu autocast")
+        with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
+            validate(args, val_loader, model, criterion)
     else:
+        print("---- no autocast")
         validate(args, val_loader, model, criterion)
 
 
@@ -294,11 +303,6 @@ def validate(args, val_loader, model, criterion):
     # device
     input = input.to(args.device)
     model = model.to(args.device)
-    # precision
-    if args.device == "xpu" and args.precision == "float16":
-        input = input.half()
-        model = model.half()
-        print("---- float16 to.half()")
     # channels_last
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
