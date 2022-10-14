@@ -85,6 +85,8 @@ def main():
     print(args)
     if args.device == "xpu":
         import intel_extension_for_pytorch
+    elif args.device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
 
     if args.cmd == 'train':
         run_training(args)
@@ -328,7 +330,7 @@ def validate(args, val_loader, model, criterion):
                 output = model(input)
                 torch.xpu.synchronize()
             duration = time.time() - start_time
-            print("Iteration: ", duration)
+            print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
@@ -357,31 +359,59 @@ def validate(args, val_loader, model, criterion):
             ) as p:
             for i in range(args.num_iters + args.num_warmup):
                 start_time = time.time()
-                output = model(input)
+                with torch.jit.fuser(fuser_mode):
+                    output = model(input)
                 torch.cuda.synchronize()
                 duration = time.time() - start_time
                 # profile iter update
                 p.step()
-                print("Iteration: ", duration)
+                print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
                 if i >= args.num_warmup:
                     total_time += duration
                     total_count += 1
-    elif not args.profile:
+    elif args.profile and args.device == "cpu":
+        with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=int((args.num_iters + args.num_warmup)/2),
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+            for i in range(args.num_iters + args.num_warmup):
+                start_time = time.time()
+                output = model(input)
+                duration = time.time() - start_time
+                # profile iter update
+                p.step()
+                print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+                if i >= args.num_warmup:
+                    total_time += duration
+                    total_count += 1
+    elif not args.profile and args.device == "cuda":
+        for i in range(args.num_iters + args.num_warmup):
+            start_time = time.time()
+            with torch.jit.fuser(fuser_mode):
+                output = model(input)
+            torch.cuda.synchronize()
+            duration = time.time() - start_time
+            print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+            if i >= args.num_warmup:
+                total_time += duration
+                total_count += 1
+    else:
         for i in range(args.num_iters + args.num_warmup):
             start_time = time.time()
             output = model(input)
             if args.device == "xpu":
                 torch.xpu.synchronize()
-            elif args.device == "cuda":
-                torch.cuda.synchronize()
             duration = time.time() - start_time
-            print("Iteration: ", duration)
+            print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
             if i >= args.num_warmup:
                 total_time += duration
                 total_count += 1
-    else:
-        print("------please check params")
-        return 1
 
     perf = args.batch_size * total_count / total_time
     print('inference Throughput: %3.3f fps'%perf)
