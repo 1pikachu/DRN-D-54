@@ -1,5 +1,5 @@
 import pdb
-
+import torch
 import torch.nn as nn
 import math
 import torch.utils.model_zoo as model_zoo
@@ -389,7 +389,8 @@ def drn_d_40(pretrained=False, **kwargs):
 def drn_d_54(pretrained=False, **kwargs):
     model = DRN(Bottleneck, [1, 1, 3, 4, 6, 3, 1, 1], arch='D', **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['drn-d-54']))
+        # model.load_state_dict(model_zoo.load_url(model_urls['drn-d-54']))
+        model.load_state_dict(torch.load("drn_d_54-0e0534ff.pth"))
     return model
 
 
