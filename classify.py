@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument('--image_size', type=int, default=224, help="input img size")
     parser.add_argument("--jit", action="store_true", help="Use jit optimize to do optimization.")
     parser.add_argument("--nv_fuser", action="store_true")
-    parser.add_argument("--channels_last", type=bool, default=False, help="Use pytorch NHWC.")
+    parser.add_argument("--channels_last", type=int, default=1, help="Use pytorch NHWC.")
     parser.add_argument("--profile", action="store_true", default=False, help="Trigger profile on current topology.")
     parser.add_argument("--bn_folding", action="store_true", default=False)
 
