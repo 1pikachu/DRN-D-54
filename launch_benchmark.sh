@@ -60,7 +60,7 @@ function generate_core {
         printf " ${OOB_EXEC_HEADER} \
 	    python classify.py test --arch drn_d_54 --dummy --pretrained \
 	    	--num_iter $num_iter --num_warmup $num_warmup \
-		--batch_size ${batch_size} \
+		--batch-size ${batch_size} \
 		--channels_last $channels_last --precision $precision \
 		--jit --bn_folding --device ${device} \
                 ${addtion_options} \
