@@ -217,25 +217,30 @@ def test_model(args):
     criterion = nn.CrossEntropyLoss()
 
     print("precision: ", args.precision)
-    if args.precision == "bfloat16" and args.device == "cpu":
-        print("---- bfloat16 cpu autocast")
-        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+    with torch.no_grad():
+        model.eval()
+        datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+        model = torch.xpu.optimize(model=model, dtype=datatype)
+
+        if args.precision == "bfloat16" and args.device == "cpu":
+            print("---- bfloat16 cpu autocast")
+            with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                validate(args, val_loader, model, criterion)
+        elif args.precision == "bfloat16" and args.device == "xpu":
+            print("---- bfloat16 xpu autocast")
+            with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                validate(args, val_loader, model, criterion)
+        elif args.precision == "float16" and args.device == "cuda":
+            print("---- float16 cuda autocast")
+            with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                validate(args, val_loader, model, criterion)
+        elif args.precision == "float16" and args.device == "xpu":
+            print("---- float16 xpu autocast")
+            with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
+                validate(args, val_loader, model, criterion)
+        else:
+            print("---- no autocast")
             validate(args, val_loader, model, criterion)
-    elif args.precision == "bfloat16" and args.device == "xpu":
-        print("---- bfloat16 xpu autocast")
-        with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
-            validate(args, val_loader, model, criterion)
-    elif args.precision == "float16" and args.device == "cuda":
-        print("---- float16 cuda autocast")
-        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-            validate(args, val_loader, model, criterion)
-    elif args.precision == "float16" and args.device == "xpu":
-        print("---- float16 xpu autocast")
-        with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16):
-            validate(args, val_loader, model, criterion)
-    else:
-        print("---- no autocast")
-        validate(args, val_loader, model, criterion)
 
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
@@ -329,8 +334,10 @@ def validate(args, val_loader, model, criterion):
             print("failed to use PyTorch jit mode due to: ", e)
     if args.profile and args.device == "xpu":
         for i in range(args.num_iters + args.num_warmup):
+            input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
             with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
                 start_time = time.time()
+                input = input.to(args.device)
                 output = model(input)
                 torch.xpu.synchronize()
             duration = time.time() - start_time
@@ -362,7 +369,9 @@ def validate(args, val_loader, model, criterion):
                 on_trace_ready=trace_handler,
             ) as p:
             for i in range(args.num_iters + args.num_warmup):
+                input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
                 start_time = time.time()
+                input = input.to(args.device)
                 with torch.jit.fuser(fuser_mode):
                     output = model(input)
                 torch.cuda.synchronize()
@@ -385,7 +394,9 @@ def validate(args, val_loader, model, criterion):
                 on_trace_ready=trace_handler,
             ) as p:
             for i in range(args.num_iters + args.num_warmup):
+                input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
                 start_time = time.time()
+                input = input.to(args.device)
                 output = model(input)
                 duration = time.time() - start_time
                 # profile iter update
@@ -396,7 +407,9 @@ def validate(args, val_loader, model, criterion):
                     total_count += 1
     elif not args.profile and args.device == "cuda":
         for i in range(args.num_iters + args.num_warmup):
+            input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
             start_time = time.time()
+            input = input.to(args.device)
             with torch.jit.fuser(fuser_mode):
                 output = model(input)
             torch.cuda.synchronize()
@@ -407,7 +420,9 @@ def validate(args, val_loader, model, criterion):
                 total_count += 1
     else:
         for i in range(args.num_iters + args.num_warmup):
+            input = torch.randn(args.batch_size, 3, args.image_size, args.image_size)
             start_time = time.time()
+            input = input.to(args.device)
             output = model(input)
             if args.device == "xpu":
                 torch.xpu.synchronize()
