@@ -219,8 +219,9 @@ def test_model(args):
     print("precision: ", args.precision)
     with torch.no_grad():
         model.eval()
-        datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
-        model = torch.xpu.optimize(model=model, dtype=datatype)
+        if args.device == "xpu":
+            datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+            model = torch.xpu.optimize(model=model, dtype=datatype)
 
         if args.precision == "bfloat16" and args.device == "cpu":
             print("---- bfloat16 cpu autocast")
