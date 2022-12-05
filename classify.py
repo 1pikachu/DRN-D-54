@@ -221,6 +221,7 @@ def test_model(args):
         model.eval()
         if args.device == "xpu":
             datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+            model = model.to(args.device)
             model = torch.xpu.optimize(model=model, dtype=datatype)
 
         if args.precision == "bfloat16" and args.device == "cpu":
